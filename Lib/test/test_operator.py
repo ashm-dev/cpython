@@ -513,6 +513,7 @@ class OperatorTestCase:
         self.assertEqual(f(a), (many_positional_arguments, many_kw_arguments))
 
     def test_methodcaller_cyclic_gc(self):
+        # gh-156762: Check for undefined behavior on calling methodcaller_clear()
         operator = self.module
 
         class C:
