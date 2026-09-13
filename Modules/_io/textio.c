@@ -753,22 +753,14 @@ buffer_access_safe(textio *self)
         return NULL;
     }
 
-    /* The critical section protects this borrowed reference until the caller
-       can acquire its own reference. */
     _Py_CRITICAL_SECTION_ASSERT_OBJECT_LOCKED(self);
-    return self->buffer;
-}
-
-static PyObject *
-buffer_acquire_safe(textio *self)
-{
-    return Py_XNewRef(buffer_access_safe(self));
+    return Py_NewRef(self->buffer);
 }
 
 static PyObject *
 buffer_getattr(textio *self, PyObject *attr_name)
 {
-    PyObject *buffer = buffer_acquire_safe(self);
+    PyObject *buffer = buffer_access_safe(self);
     if (buffer == NULL) {
         return NULL;
     }
@@ -781,7 +773,7 @@ buffer_getattr(textio *self, PyObject *attr_name)
 static PyObject *
 buffer_callmethod_noargs(textio *self, PyObject *name)
 {
-    PyObject *buffer = buffer_acquire_safe(self);
+    PyObject *buffer = buffer_access_safe(self);
     if (buffer == NULL) {
         return NULL;
     }
@@ -794,7 +786,7 @@ buffer_callmethod_noargs(textio *self, PyObject *name)
 static PyObject *
 buffer_callmethod_onearg(textio *self, PyObject *name, PyObject *arg)
 {
-    PyObject *buffer = buffer_acquire_safe(self);
+    PyObject *buffer = buffer_access_safe(self);
     if (buffer == NULL) {
         return NULL;
     }
@@ -1651,8 +1643,8 @@ _io_TextIOWrapper_detach_impl(textio *self)
     if (buffer == NULL) {
         return NULL;
     }
-    self->buffer = NULL;
     self->detached = 1;
+    Py_CLEAR(self->buffer);
     return buffer;
 }
 
@@ -1874,7 +1866,7 @@ _io_TextIOWrapper_write_impl(textio *self, PyObject *text)
     }
 
     if (needflush) {
-        PyObject *buffer = buffer_acquire_safe(self);
+        PyObject *buffer = buffer_access_safe(self);
         if (buffer == NULL) {
             return NULL;
         }
@@ -2694,7 +2686,7 @@ _io_TextIOWrapper_seek_impl(textio *self, PyObject *cookieObj, int whence)
             Py_DECREF(res);
         }
 
-        PyObject *buf = buffer_acquire_safe(self);
+        PyObject *buf = buffer_access_safe(self);
         if (buf == NULL) {
             goto fail;
         }
@@ -3457,7 +3449,7 @@ static PyObject *
 _io_TextIOWrapper_buffer_get_impl(textio *self)
 /*[clinic end generated code: output=d265a34555aa5d4b input=5951cfa148f7350a]*/
 {
-    return buffer_acquire_safe(self);
+    return buffer_access_safe(self);
 }
 
 static PyMethodDef incrementalnewlinedecoder_methods[] = {
