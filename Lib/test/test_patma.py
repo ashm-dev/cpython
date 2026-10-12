@@ -132,6 +132,31 @@ class TestInheritance(unittest.TestCase):
 
 class TestPatma(unittest.TestCase):
 
+    def test_numeric_class_patterns(self):
+        def classify(value):
+            match value:
+                case int():
+                    return 'int'
+                case float():
+                    return 'float'
+            return None
+
+        class FloatAsInt(float):
+            @property
+            def __class__(self):
+                return int
+
+        cases = (
+            (1, 'int'),
+            (1.5, 'float'),
+            (True, 'int'),
+            ('1', None),
+            (FloatAsInt(1.5), 'int'),
+        )
+        for value, expected in cases:
+            with self.subTest(value=value):
+                self.assertEqual(classify(value), expected)
+
     def test_patma_000(self):
         match 0:
             case 0:

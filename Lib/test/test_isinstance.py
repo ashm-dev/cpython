@@ -197,6 +197,73 @@ class TestIsInstanceIsSubclass(unittest.TestCase):
         self.assertEqual(True, isinstance(Child(), Super))
         self.assertEqual(False, isinstance(Child(), AbstractSuper))
 
+    def test_isinstance_exact_numbers(self):
+        cases = (
+            (1, int, True),
+            (1, float, False),
+            (1, bool, False),
+            (1, object, True),
+            (1, str, False),
+            (1 << 100, float, False),
+            (1.5, float, True),
+            (1.5, int, False),
+            (1.5, object, True),
+            (1.5, str, False),
+            (float('nan'), int, False),
+            (float('inf'), int, False),
+            (True, int, True),
+            (True, float, False),
+        )
+        for value, cls, expected in cases:
+            with self.subTest(value=value, cls=cls):
+                self.assertIs(isinstance(value, cls), expected)
+
+        for base in (int, float):
+            class Number(base):
+                pass
+
+            with self.subTest(base=base):
+                self.assertFalse(isinstance(base(), Number))
+                self.assertTrue(isinstance(Number(), base))
+
+    def test_isinstance_number_subclass_class(self):
+        class Other:
+            pass
+
+        for base in (int, float):
+            class Number(base):
+                @property
+                def __class__(self):
+                    return Other
+
+            with self.subTest(base=base):
+                self.assertTrue(isinstance(Number(), Other))
+                self.assertTrue(isinstance(Number(), base))
+
+    def test_isinstance_number_subclass_class_error(self):
+        for base in (int, float):
+            class Number(base):
+                @property
+                def __class__(self):
+                    raise RuntimeError('class lookup failed')
+
+            with self.subTest(base=base):
+                self.assertTrue(isinstance(Number(), base))
+                with self.assertRaisesRegex(RuntimeError, 'class lookup failed'):
+                    isinstance(Number(), str)
+
+    def test_isinstance_numbers_instancecheck(self):
+        class Meta(type):
+            def __instancecheck__(cls, instance):
+                return instance == 1
+
+        class Other(metaclass=Meta):
+            pass
+
+        for value, expected in ((1, True), (2, False), (1.0, True), (2.0, False)):
+            with self.subTest(value=value):
+                self.assertIs(isinstance(value, Other), expected)
+
     def test_isinstance_abstract(self):
         # abstract instances
         self.assertEqual(True, isinstance(AbstractSuper(), AbstractSuper))

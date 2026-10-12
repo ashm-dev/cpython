@@ -2608,6 +2608,10 @@ object_isinstance(PyObject *inst, PyObject *cls)
     if (PyType_Check(cls)) {
         retval = PyObject_TypeCheck(inst, (PyTypeObject *)cls);
         if (retval == 0) {
+            /* Exact int and float instances cannot override __class__. */
+            if (PyLong_CheckExact(inst) || PyFloat_CheckExact(inst)) {
+                return 0;
+            }
             retval = PyObject_GetOptionalAttr(inst, &_Py_ID(__class__), &icls);
             if (icls != NULL) {
                 if (icls != (PyObject *)(Py_TYPE(inst)) && PyType_Check(icls)) {
