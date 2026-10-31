@@ -5547,21 +5547,15 @@ _PyLong_Lshift(PyObject *a, int64_t shiftby)
 }
 
 
-/* Compute two's complement of digit vector a[0:m], writing result to
-   z[0:m].  The digit vector a need not be normalized, but should not
-   be entirely zero.  a and z may point to the same digit vector. */
-
-static void
-v_complement(digit *z, digit *a, Py_ssize_t m)
+/* Advance one digit of two's complement when mask is PyLong_MASK and
+   the initial carry is 1, or leave it unchanged when both are zero. */
+static inline digit
+twos_comp_step(digit d, digit mask, digit *carry)
 {
-    Py_ssize_t i;
-    digit carry = 1;
-    for (i = 0; i < m; ++i) {
-        carry += a[i] ^ PyLong_MASK;
-        z[i] = carry & PyLong_MASK;
-        carry >>= PyLong_SHIFT;
-    }
-    assert(carry == 0);
+    *carry += d ^ mask;
+    digit res = *carry & PyLong_MASK;
+    *carry >>= PyLong_SHIFT;
+    return res;
 }
 
 /* Bitwise and/xor/or operations */
@@ -5571,57 +5565,105 @@ long_bitwise(PyLongObject *a,
              char op,  /* '&', '|', '^' */
              PyLongObject *b)
 {
-    int nega, negb, negz;
-    Py_ssize_t size_a, size_b, size_z, i;
-    PyLongObject *z;
+    Py_ssize_t size_a = _PyLong_DigitCount(a);
+    Py_ssize_t size_b = _PyLong_DigitCount(b);
 
-    PyLongObject *new_a = NULL;
-    PyLongObject *new_b = NULL;
-
-    /* Bitwise operations for negative numbers operate as though
-       on a two's complement representation.  So convert arguments
-       from sign-magnitude to two's complement, and convert the
-       result back to sign-magnitude at the end. */
-
-    size_a = _PyLong_DigitCount(a);
-    size_b = _PyLong_DigitCount(b);
-    /* Swap a and b if necessary to ensure size_a >= size_b. */
     if (size_a < size_b) {
-        z = a; a = b; b = z;
-        size_z = size_a; size_a = size_b; size_b = size_z;
+        PyLongObject *tmp = a;
+        a = b;
+        b = tmp;
+        Py_ssize_t size_tmp = size_a;
+        size_a = size_b;
+        size_b = size_tmp;
     }
 
-    /* If a is negative, replace it by its two's complement. */
-    nega = _PyLong_IsNegative(a);
-    if (nega) {
-        z = long_alloc(size_a);
-        if (z == NULL)
-            return NULL;
-        v_complement(z->long_value.ob_digit, a->long_value.ob_digit, size_a);
-        new_a = z; // reference to decrement instead of a itself
-        a = z;
-    }
+    int nega = _PyLong_IsNegative(a);
+    int negb = _PyLong_IsNegative(b);
+    const digit *da = a->long_value.ob_digit;
+    const digit *db = b->long_value.ob_digit;
 
-    /* Same for b. */
-    negb = _PyLong_IsNegative(b);
-    if (negb) {
-        z = long_alloc(size_b);
+    if (!nega && !negb) {
+        Py_ssize_t size_z;
+        switch (op) {
+        case '&':
+            size_z = size_b;
+            while (size_z > 0 && (da[size_z - 1] & db[size_z - 1]) == 0) {
+                size_z--;
+            }
+            break;
+        case '^':
+            size_z = size_a;
+            if (size_a == size_b) {
+                while (size_z > 0 && da[size_z - 1] == db[size_z - 1]) {
+                    size_z--;
+                }
+            }
+            break;
+        case '|':
+            size_z = size_a;
+            break;
+        default:
+            Py_UNREACHABLE();
+        }
+
+        if (size_z == 0) {
+            return get_small_int(0);
+        }
+        if (size_z == 1) {
+            digit d;
+            if (op == '&') {
+                d = da[0] & db[0];
+            }
+            else if (op == '|') {
+                d = size_b ? (da[0] | db[0]) : da[0];
+            }
+            else {
+                d = size_b ? (da[0] ^ db[0]) : da[0];
+            }
+            if (IS_SMALL_UINT(d)) {
+                return get_small_int((sdigit)d);
+            }
+            return _PyLong_FromMedium((sdigit)d);
+        }
+
+        PyLongObject *z = long_alloc(size_z);
         if (z == NULL) {
-            Py_XDECREF(new_a);
             return NULL;
         }
-        v_complement(z->long_value.ob_digit, b->long_value.ob_digit, size_b);
-        new_b = z; // reference to decrement instead of b itself
-        b = z;
+        digit *dz = z->long_value.ob_digit;
+        Py_ssize_t size_overlap = Py_MIN(size_z, size_b);
+
+        switch (op) {
+        case '&':
+            for (Py_ssize_t i = 0; i < size_overlap; ++i) {
+                dz[i] = da[i] & db[i];
+            }
+            break;
+        case '|':
+            for (Py_ssize_t i = 0; i < size_overlap; ++i) {
+                dz[i] = da[i] | db[i];
+            }
+            break;
+        case '^':
+            for (Py_ssize_t i = 0; i < size_overlap; ++i) {
+                dz[i] = da[i] ^ db[i];
+            }
+            break;
+        default:
+            Py_UNREACHABLE();
+        }
+
+        if (size_z > size_b) {
+            memcpy(dz + size_b, da + size_b, (size_z - size_b) * sizeof(digit));
+        }
+        /* The most significant result digit is already nonzero. */
+        return (PyObject *)z;
     }
 
-    /* JRH: The original logic here was to allocate the result value (z)
-       as the longer of the two operands.  However, there are some cases
-       where the result is guaranteed to be shorter than that: AND of two
-       positives, OR of two negatives: use the shorter number.  AND with
-       mixed signs: use the positive number.  OR with mixed signs: use the
-       negative number.
-    */
+    /* Convert negative operands and the result to/from two's complement
+       one digit at a time to avoid temporary allocations. */
+    int negz;
+    Py_ssize_t size_z;
     switch (op) {
     case '^':
         negz = nega ^ negb;
@@ -5639,56 +5681,66 @@ long_bitwise(PyLongObject *a,
         Py_UNREACHABLE();
     }
 
-    if ((size_z + negz) == 0) {
-        Py_XDECREF(new_a);
-        Py_XDECREF(new_b);
+    if (size_z + negz == 0) {
         return get_small_int(0);
     }
 
-    /* We allow an extra digit if z is negative, to make sure that
-       the final two's complement of z doesn't overflow. */
-    z = long_alloc(size_z + negz);
+    PyLongObject *z = long_alloc(size_z + negz);
     if (z == NULL) {
-        Py_XDECREF(new_a);
-        Py_XDECREF(new_b);
         return NULL;
     }
+    digit *dz = z->long_value.ob_digit;
 
-    /* Compute digits for overlap of a and b. */
-    switch(op) {
+    digit carry_a = (digit)nega, mask_a = nega ? PyLong_MASK : 0;
+    digit carry_b = (digit)negb, mask_b = negb ? PyLong_MASK : 0;
+    digit carry_z = (digit)negz, mask_z = negz ? PyLong_MASK : 0;
+
+    Py_ssize_t i = 0;
+    switch (op) {
     case '&':
-        for (i = 0; i < size_b; ++i)
-            z->long_value.ob_digit[i] = a->long_value.ob_digit[i] & b->long_value.ob_digit[i];
+        for (; i < size_b; ++i) {
+            digit a_2c = twos_comp_step(da[i], mask_a, &carry_a);
+            digit b_2c = twos_comp_step(db[i], mask_b, &carry_b);
+            dz[i] = twos_comp_step(a_2c & b_2c, mask_z, &carry_z);
+        }
         break;
     case '|':
-        for (i = 0; i < size_b; ++i)
-            z->long_value.ob_digit[i] = a->long_value.ob_digit[i] | b->long_value.ob_digit[i];
+        for (; i < size_b; ++i) {
+            digit a_2c = twos_comp_step(da[i], mask_a, &carry_a);
+            digit b_2c = twos_comp_step(db[i], mask_b, &carry_b);
+            dz[i] = twos_comp_step(a_2c | b_2c, mask_z, &carry_z);
+        }
         break;
     case '^':
-        for (i = 0; i < size_b; ++i)
-            z->long_value.ob_digit[i] = a->long_value.ob_digit[i] ^ b->long_value.ob_digit[i];
+        for (; i < size_b; ++i) {
+            digit a_2c = twos_comp_step(da[i], mask_a, &carry_a);
+            digit b_2c = twos_comp_step(db[i], mask_b, &carry_b);
+            dz[i] = twos_comp_step(a_2c ^ b_2c, mask_z, &carry_z);
+        }
         break;
     default:
         Py_UNREACHABLE();
     }
 
-    /* Copy any remaining digits of a, inverting if necessary. */
-    if (op == '^' && negb)
-        for (; i < size_z; ++i)
-            z->long_value.ob_digit[i] = a->long_value.ob_digit[i] ^ PyLong_MASK;
-    else if (i < size_z)
-        memcpy(&z->long_value.ob_digit[i], &a->long_value.ob_digit[i],
-               (size_z-i)*sizeof(digit));
-
-    /* Complement result if negative. */
-    if (negz) {
-        _PyLong_FlipSign(z);
-        z->long_value.ob_digit[size_z] = PyLong_MASK;
-        v_complement(z->long_value.ob_digit, z->long_value.ob_digit, size_z+1);
+    if (i < size_z) {
+        if (!nega && !negz && !(op == '^' && negb)) {
+            /* Sign extension of negative b leaves positive a unchanged. */
+            memcpy(dz + i, da + i, (size_z - i) * sizeof(digit));
+        }
+        else {
+            digit tail_mask = (op == '^' && negb) ? PyLong_MASK : 0;
+            for (; i < size_z; ++i) {
+                digit a_2c = twos_comp_step(da[i], mask_a, &carry_a);
+                dz[i] = twos_comp_step(a_2c ^ tail_mask, mask_z, &carry_z);
+            }
+        }
     }
 
-    Py_XDECREF(new_a);
-    Py_XDECREF(new_b);
+    if (negz) {
+        dz[size_z] = carry_z;
+        _PyLong_FlipSign(z);
+    }
+
     return (PyObject *)maybe_small_long(long_normalize(z));
 }
 
