@@ -5560,7 +5560,12 @@ twos_comp_step(digit d, digit mask, digit *carry)
 
 /* Bitwise and/xor/or operations */
 
-static PyObject *
+Py_NO_INLINE static PyObject *
+long_bitwise_negative(PyLongObject *a, char op, PyLongObject *b,
+                      Py_ssize_t size_a, Py_ssize_t size_b,
+                      int nega, int negb);
+
+static inline Py_ALWAYS_INLINE PyObject *
 long_bitwise(PyLongObject *a,
              char op,  /* '&', '|', '^' */
              PyLongObject *b)
@@ -5660,8 +5665,16 @@ long_bitwise(PyLongObject *a,
         return (PyObject *)z;
     }
 
-    /* Convert negative operands and the result to/from two's complement
-       one digit at a time to avoid temporary allocations. */
+    return long_bitwise_negative(a, op, b, size_a, size_b, nega, negb);
+}
+
+Py_NO_INLINE static PyObject *
+long_bitwise_negative(PyLongObject *a, char op, PyLongObject *b,
+                      Py_ssize_t size_a, Py_ssize_t size_b,
+                      int nega, int negb)
+{
+    const digit *da = a->long_value.ob_digit;
+    const digit *db = b->long_value.ob_digit;
     int negz;
     Py_ssize_t size_z;
     switch (op) {
